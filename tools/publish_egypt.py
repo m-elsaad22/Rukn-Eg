@@ -6,9 +6,11 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import ssl
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,16 +29,19 @@ PASSWORD = os.environ.get("WP_EG_APP_PASSWORD", "")
 WHATSAPP = "971586634710"
 
 CTX = ssl.create_default_context()
-AUTH = base64.b64encode(f"{USER}:{PASSWORD}".encode()).decode()
+
+
+def _auth() -> str:
+    return base64.b64encode(f"{USER}:{PASSWORD}".encode()).decode()
 
 
 def req(route: str, method: str = "GET", data=None, timeout: int = 90):
     url = f"{BASE}?rest_route={route}"
     body = None
     headers = {
-        "Authorization": f"Basic {AUTH}",
+        "Authorization": f"Basic {_auth()}",
         "Accept": "application/json",
-        "User-Agent": "rukn-egypt-publisher/1.0",
+        "User-Agent": "rukn-egypt-publisher/1.1",
     }
     if data is not None:
         body = json.dumps(data).encode()
@@ -70,143 +75,66 @@ def save_state(state: dict) -> None:
     STATE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def slugify(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text)
+    text = re.sub(r"[^\w\s-]", "", text, flags=re.U).strip().lower()
+    text = re.sub(r"[-\s]+", "-", text)
+    return text[:70] or "term"
+
+
 def ensure_term(taxonomy: str, name: str, slug: str, state: dict) -> int | None:
     key = f"{taxonomy}:{slug}"
     if key in state["terms"]:
         return state["terms"][key]
     route = {
-        "category": "/wp/v2/categories",
         "cities": "/wp/v2/cities",
         "service_categories": "/wp/v2/service_categories",
         "post_tag": "/wp/v2/tags",
     }.get(taxonomy)
-    if route:
-        st, data = req(route, "POST", {"name": name, "slug": slug})
-        if st in (200, 201) and isinstance(data, dict) and data.get("id"):
-            state["terms"][key] = data["id"]
-            save_state(state)
-            return data["id"]
-        if st == 400 and isinstance(data, dict):
-            # already exists
-            search = req(f"{route}&{urllib.parse.urlencode({'slug': slug, 'per_page': 1})}")
-            if search[0] == 200 and isinstance(search[1], list) and search[1]:
-                state["terms"][key] = search[1][0]["id"]
-                save_state(state)
-                return state["terms"][key]
-    # CLI fallback
-    st, data = cli(
-        f"wp term create {taxonomy} {json.dumps(name, ensure_ascii=False)} --slug={slug} --porcelain",
-        True,
-    )
-    if isinstance(data, dict) and data.get("exit_code") == 0 and data.get("stdout"):
-        try:
-            tid = int(str(data["stdout"]).strip().split()[0])
-            state["terms"][key] = tid
-            save_state(state)
-            return tid
-        except Exception:
-            pass
-    st, data = cli(f"wp term list {taxonomy} --search={json.dumps(name, ensure_ascii=False)} --format=json")
-    if isinstance(data, dict) and data.get("stdout"):
-        try:
-            rows = json.loads(data["stdout"])
-            if rows:
-                state["terms"][key] = int(rows[0]["term_id"])
-                save_state(state)
-                return state["terms"][key]
-        except Exception:
-            pass
-    print(f"WARN term failed {taxonomy} {name} {st} {data}")
+    if not route:
+        return None
+    st, data = req(route, "POST", {"name": name, "slug": slug})
+    if st in (200, 201) and isinstance(data, dict) and data.get("id"):
+        state["terms"][key] = data["id"]
+        return data["id"]
+    st2, found = req(f"{route}&slug={urllib.parse.quote(slug)}&per_page=20")
+    if st2 == 200 and isinstance(found, list):
+        for row in found:
+            if row.get("slug") == slug:
+                state["terms"][key] = row["id"]
+                return row["id"]
+    print(f"WARN term {taxonomy} {name} -> {st} {data}")
     return None
 
 
-def upsert_post(item: dict, state: dict) -> int | None:
+def upsert_post(item: dict, state: dict, city_id: int | None, tag_ids: list[int]) -> int | None:
     slug = item["post_name"]
+    payload = {
+        "title": item["post_title"],
+        "content": item["post_content"],
+        "status": "publish",
+        "slug": slug,
+        "comment_status": "closed",
+        "ping_status": "closed",
+    }
+    if city_id:
+        payload["cities"] = [city_id]
+    if tag_ids:
+        payload["tags"] = tag_ids
+
     if slug in state["posts"]:
         post_id = state["posts"][slug]
-        st, data = req(
-            f"/wp/v2/posts/{post_id}",
-            "POST",
-            {
-                "title": item["post_title"],
-                "content": item["post_content"],
-                "status": "publish",
-                "slug": slug,
-                "comment_status": "closed",
-                "ping_status": "closed",
-            },
-        )
+        st, data = req(f"/wp/v2/posts/{post_id}", "POST", payload)
         if st not in (200, 201):
             print(f"UPDATE FAIL {slug} {st} {data}")
             return post_id
-    else:
-        payload = {
-            "title": item["post_title"],
-            "content": item["post_content"],
-            "status": "publish",
-            "slug": slug,
-            "comment_status": "closed",
-            "ping_status": "closed",
-        }
-        st, data = req("/wp/v2/posts", "POST", payload)
-        if st not in (200, 201) or not isinstance(data, dict):
-            print(f"CREATE FAIL {slug} {st} {data}")
-            return None
-        post_id = data["id"]
-        state["posts"][slug] = post_id
-        save_state(state)
-
-    # Rank Math + contact meta
-    metas = {
-        "rank_math_title": item.get("rank_math_title") or "",
-        "rank_math_description": item.get("rank_math_description") or "",
-        "rank_math_focus_keyword": item.get("rank_math_focus_keyword") or "",
-        "rank_math_robots": "index,follow",
-        "whatsapp_number": WHATSAPP,
-        "country": item.get("country") or "مصر",
-    }
-    for key, value in metas.items():
-        cli(
-            f"wp post meta update {post_id} {key} {json.dumps(value, ensure_ascii=False)} --force",
-            True,
-        )
-
-    city_tax = "cities"
-    city_name = item.get("city") or ""
-    if city_name:
-        info = city_info(item.get("city_ar") or city_name)
-        slug_city = info.get("slug") or slug
-        tid = ensure_term(city_tax, city_name, slug_city, state)
-        if tid:
-            cli(f"wp post term set {post_id} cities {tid} --by=id", True)
-
-    cat_name = item.get("categories") or ""
-    cat_slug = item.get("category_slug") or "egypt-services"
-    if cat_name:
-        cid = ensure_term("category", cat_name, cat_slug, state)
-        if cid:
-            cli(f"wp post term set {post_id} category {cid} --by=id", True)
-        sid = ensure_term("service_categories", cat_name, cat_slug, state)
-        if sid:
-            cli(f"wp post term set {post_id} service_categories {sid} --by=id", True)
-
-    tags = [t.strip() for t in (item.get("tags") or "").split(",") if t.strip()]
-    for tag in tags[:8]:
-        tslug = re_slug(tag)
-        tid = ensure_term("post_tag", tag, tslug, state)
-        if tid:
-            cli(f"wp post term add {post_id} post_tag {tid} --by=id", True)
-    return post_id
-
-
-def re_slug(text: str) -> str:
-    import re
-    import unicodedata
-
-    text = unicodedata.normalize("NFKD", text)
-    text = re.sub(r"[^\w\s-]", "", text, flags=re.U).strip().lower()
-    text = re.sub(r"[-\s]+", "-", text)
-    return text[:60] or "tag"
+        return post_id
+    st, data = req("/wp/v2/posts", "POST", payload)
+    if st not in (200, 201) or not isinstance(data, dict):
+        print(f"CREATE FAIL {slug} {st} {data}")
+        return None
+    state["posts"][slug] = data["id"]
+    return data["id"]
 
 
 def configure_site() -> None:
@@ -220,63 +148,56 @@ def configure_site() -> None:
     }
     for key, value in updates.items():
         st, data = cli(f"wp option update {key} {json.dumps(value, ensure_ascii=False)}", True)
-        print("option", key, st, (data or {}).get("exit_code") if isinstance(data, dict) else data)
-
-    # Do NOT flip pretty permalinks until /eg/.htaccess rewrites exist.
-    # Pretty URLs currently 404 at LiteSpeed and would break working ?p= / ?name= links.
+        print("option", key, (data or {}).get("exit_code") if isinstance(data, dict) else st)
 
 
 def create_pages(state: dict, posts: list[dict]) -> None:
-    html_map = []
-    for item in posts:
-        html_map.append(
-            f'<li><a href="{BASE.replace("/index.php","")}/?name={item["post_name"]}">{item["post_title"]}</a></li>'
-        )
+    home = "https://rukn-eltatawer.com/eg"
+    html_map = [
+        f'<li lang="{item.get("lang","ar")}"><a href="{home}/?name={item["post_name"]}">{item["post_title"]}</a></li>'
+        for item in posts
+    ]
     pages = {
         "contact-us": {
             "title": "تواصل معنا — ركن التطور مصر / Contact Egypt",
             "content": f"""<h1>تواصل مع ركن التطور في مصر</h1>
-<p>المعاينة والمقايسات بالجنيه المصري. أرسل المنطقة ونوع الوحدة ووصف العمل عبر واتساب.</p>
-<p><a href="https://wa.me/{WHATSAPP}?text=%D9%85%D8%B1%D8%AD%D8%A8%D8%A7%D9%8B%20%D8%B1%D9%83%D9%86%20%D8%A7%D9%84%D8%AA%D8%B7%D9%88%D8%B1%20%D9%85%D8%B5%D8%B1">واتساب مصر</a></p>
-<h2>Contact in English</h2>
-<p>Inspection and written estimates in EGP. Message the Egypt desk on WhatsApp with your city, compound, and job.</p>
+<p>المعاينة والمقايسات بالجنيه المصري. أرسل المحافظة والحي ونوع الوحدة عبر واتساب.</p>
+<p><a href="https://wa.me/{WHATSAPP}?text=%D9%85%D8%B1%D8%AD%D8%A8%D8%A7%D9%8B%20%D8%B1%D9%83%D9%86%20%D8%A7%D9%84%D8%AA%D8%B7%D9%88%D8%B1%20%D9%85%D8%B5%D8%B1">واتساب ركن التطور مصر</a></p>
+<h2>English</h2>
+<p>Inspection and written estimates in EGP. WhatsApp the Egypt desk with your city, compound, and job.</p>
 """,
         },
         "about-egypt": {
             "title": "عن ركن التطور في مصر / About",
             "content": """<h1>ركن التطور في مصر</h1>
-<p>نقدم التشطيبات والديكور والحرفيين والصيانة داخل محافظات مصر، بمحتوى وعقود وخامات مناسبة للسوق المصري وليس نسخة من الإمارات أو السعودية.</p>
-<p>Rukn El Tatawer in Egypt delivers finishing, trades and maintenance for Egyptian homes, priced in EGP.</p>
+<p>التشطيبات والديكور والحرفيون والصيانة داخل محافظات مصر، بعقود وخامات بالجنيه المصري ومحتوى محلي وليس نسخة خليجية.</p>
+<p>Rukn El Tatawer Egypt delivers finishing, trades and maintenance for Egyptian homes, priced in EGP.</p>
 """,
         },
         "privacy-egypt": {
             "title": "سياسة الخصوصية / Privacy",
             "content": """<h1>سياسة الخصوصية</h1>
-<p>نستخدم بيانات التواصل فقط للرد على طلب الخدمة داخل مصر. لا نبيع البيانات لأطراف إعلانية.</p>
+<p>بيانات التواصل تُستخدم للرد على طلب الخدمة داخل مصر فقط.</p>
 <p>Contact details are used only to fulfil Egypt service requests.</p>
 """,
         },
         "html-sitemap": {
             "title": "خريطة الموقع — مصر / HTML Sitemap",
-            "content": "<h1>كل صفحات ركن التطور مصر</h1><ul>"
-            + "".join(html_map)
-            + "</ul>",
+            "content": "<h1>صفحات ركن التطور مصر</h1><ul>" + "".join(html_map) + "</ul>",
         },
     }
     for slug, page in pages.items():
+        payload = {
+            "title": page["title"],
+            "content": page["content"],
+            "status": "publish",
+            "slug": slug,
+            "comment_status": "closed",
+        }
         if slug in state["pages"]:
-            pid = state["pages"][slug]
-            req(
-                f"/wp/v2/pages/{pid}",
-                "POST",
-                {"title": page["title"], "content": page["content"], "status": "publish", "slug": slug},
-            )
+            req(f"/wp/v2/pages/{state['pages'][slug]}", "POST", payload)
             continue
-        st, data = req(
-            "/wp/v2/pages",
-            "POST",
-            {"title": page["title"], "content": page["content"], "status": "publish", "slug": slug, "comment_status": "closed"},
-        )
+        st, data = req("/wp/v2/pages", "POST", payload)
         if st in (200, 201) and isinstance(data, dict):
             state["pages"][slug] = data["id"]
             save_state(state)
@@ -285,23 +206,63 @@ def create_pages(state: dict, posts: list[dict]) -> None:
             print("PAGE FAIL", slug, st, data)
 
 
-def delete_hello_world() -> None:
-    st, data = req("/wp/v2/posts/1", "DELETE", {"force": True})
-    print("delete hello", st, data if not isinstance(data, dict) else data.get("deleted") or data.get("code"))
+def delete_noise() -> None:
+    for pid in (1, 31):
+        st, data = req(f"/wp/v2/posts/{pid}&force=true", "DELETE")
+        print("delete", pid, st, data.get("deleted") if isinstance(data, dict) else data)
 
 
 def build_menu(state: dict) -> None:
-    st, data = cli("wp menu create Egypt --porcelain", True)
-    print("menu", st, data)
+    cli("wp menu create Egypt --porcelain", True)
     home = "https://rukn-eltatawer.com/eg/"
     cli(f"wp menu item add-custom Egypt الرئيسية {home}", True)
-    if "contact-us" in state["pages"]:
-        cli(f"wp menu item add-post Egypt {state['pages']['contact-us']}", True)
-    if "about-egypt" in state["pages"]:
-        cli(f"wp menu item add-post Egypt {state['pages']['about-egypt']}", True)
-    if "html-sitemap" in state["pages"]:
-        cli(f"wp menu item add-post Egypt {state['pages']['html-sitemap']}", True)
+    for slug in ("contact-us", "about-egypt", "html-sitemap"):
+        if slug in state["pages"]:
+            cli(f"wp menu item add-post Egypt {state['pages'][slug]}", True)
     cli("wp menu location assign Egypt main-menu", True)
+
+
+def preload_terms(items: list[dict], state: dict) -> tuple[dict, dict]:
+    city_ids = {}
+    seen_tags: dict[str, int] = {}
+    for item in items:
+        city_ar = item.get("city_ar") or (item.get("city") if item.get("lang") == "ar" else None)
+        city_label = item.get("city") or ""
+        if item.get("lang") == "en":
+            info = city_info(item.get("city_ar") or "")
+            slug = (info.get("slug") or slugify(city_label)) + "-en"
+            tid = ensure_term("cities", city_label, slug, state)
+            if tid and city_label:
+                city_ids[city_label] = tid
+            if item.get("city_ar"):
+                # English posts still map via city_ar below using EN label
+                city_ids[item["city_ar"] + "|en"] = tid
+        else:
+            info = city_info(city_label)
+            tid = ensure_term("cities", city_label, info.get("slug") or slugify(city_label), state)
+            if tid:
+                city_ids[city_label] = tid
+        cat = item.get("categories") or ""
+        cslug = item.get("category_slug") or slugify(cat)
+        if cat:
+            ensure_term("service_categories", cat, cslug, state)
+        for tag in [t.strip() for t in (item.get("tags") or "").split(",") if t.strip()][:6]:
+            tslug = slugify(tag)
+            if tslug not in seen_tags:
+                tid = ensure_term("post_tag", tag, tslug, state)
+                if tid:
+                    seen_tags[tslug] = tid
+    save_state(state)
+    return city_ids, seen_tags
+
+
+def tags_for(item: dict, seen_tags: dict) -> list[int]:
+    ids = []
+    for tag in [t.strip() for t in (item.get("tags") or "").split(",") if t.strip()][:6]:
+        tid = seen_tags.get(slugify(tag))
+        if tid:
+            ids.append(tid)
+    return ids
 
 
 def main() -> None:
@@ -312,21 +273,26 @@ def main() -> None:
     print("configure site…")
     configure_site()
     items = payload["arabic"] + payload["english"]
-    print(f"publishing {len(items)} posts")
+    print("preload terms…")
+    city_ids, seen_tags = preload_terms(items, state)
+    print(f"cities={len(city_ids)} tags={len(seen_tags)} publishing {len(items)}")
     ok = 0
     for i, item in enumerate(items, 1):
-        pid = upsert_post(item, state)
+        if item.get("lang") == "en" and item.get("city_ar"):
+            city_id = city_ids.get(item["city_ar"] + "|en")
+        else:
+            city_id = city_ids.get(item.get("city") or "")
+        pid = upsert_post(item, state, city_id, tags_for(item, seen_tags))
         if pid:
             ok += 1
-        if i % 25 == 0:
+        if i % 20 == 0:
             print(f"  {i}/{len(items)} ok={ok}")
             save_state(state)
-        time.sleep(0.05)
     save_state(state)
     print("pages…")
-    create_pages(state, payload["arabic"] + payload["english"])
+    create_pages(state, items)
     build_menu(state)
-    delete_hello_world()
+    delete_noise()
     cli("wp cache flush", True)
     cli("wp litespeed-purge all", True)
     print(f"DONE ok={ok}/{len(items)} state={STATE}")
