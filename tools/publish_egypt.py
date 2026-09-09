@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from egypt_data import city_info  # noqa: E402
+from egypt_data import city_info, PHONE_INTL, PHONE_TEL, WHATSAPP_INTL, page_url, post_url  # noqa: E402
 
 DIST = ROOT / "dist" / "egypt-posts.json"
 STATE = ROOT / "dist" / "publish-state.json"
@@ -26,7 +26,7 @@ STATE = ROOT / "dist" / "publish-state.json"
 BASE = "https://rukn-eltatawer.com/eg/index.php"
 USER = os.environ.get("WP_EG_USER", "melsaad")
 PASSWORD = os.environ.get("WP_EG_APP_PASSWORD", "")
-WHATSAPP = "971586634710"
+WHATSAPP = WHATSAPP_INTL
 
 CTX = ssl.create_default_context()
 
@@ -144,7 +144,10 @@ def configure_site() -> None:
         "default_comment_status": "closed",
         "posts_per_page": "12",
         "whatsapp_number": WHATSAPP,
+        "phonenumber": PHONE_TEL,
+        "rukn_hide_call_global": "off",
         "date_format": "j F Y",
+        "Copyrights": 'حقوق النشر {%YEAR%} © جميع الحقوق محفوظة لصالح "شركة ركن التطور - مصر"',
     }
     for key, value in updates.items():
         st, data = cli(f"wp option update {key} {json.dumps(value, ensure_ascii=False)}", True)
@@ -154,15 +157,15 @@ def configure_site() -> None:
 def create_pages(state: dict, posts: list[dict]) -> None:
     home = "https://rukn-eltatawer.com/eg"
     html_map = [
-        f'<li lang="{item.get("lang","ar")}"><a href="{home}/?name={item["post_name"]}">{item["post_title"]}</a></li>'
+        f'<li lang="{item.get("lang","ar")}"><a href="{post_url(item["post_name"])}">{item["post_title"]}</a></li>'
         for item in posts
     ]
     pages = {
         "contact-us": {
             "title": "تواصل معنا — ركن التطور مصر / Contact Egypt",
             "content": f"""<h1>تواصل مع ركن التطور في مصر</h1>
-<p>المعاينة والمقايسات بالجنيه المصري. أرسل المحافظة والحي ونوع الوحدة عبر واتساب.</p>
-<p><a href="https://wa.me/{WHATSAPP}?text=%D9%85%D8%B1%D8%AD%D8%A8%D8%A7%D9%8B%20%D8%B1%D9%83%D9%86%20%D8%A7%D9%84%D8%AA%D8%B7%D9%88%D8%B1%20%D9%85%D8%B5%D8%B1">واتساب ركن التطور مصر</a></p>
+<p>المعاينة والمقايسات بالجنيه المصري. أرسل المحافظة والحي ونوع الوحدة عبر واتساب أو الاتصال {PHONE_TEL}.</p>
+<p><a href="tel:{PHONE_TEL}">اتصل {PHONE_TEL}</a> — <a href="https://wa.me/{WHATSAPP}?text=%D9%85%D8%B1%D8%AD%D8%A8%D8%A7%D9%8B%20%D8%B1%D9%83%D9%86%20%D8%A7%D9%84%D8%AA%D8%B7%D9%88%D8%B1%20%D9%85%D8%B5%D8%B1">واتساب ركن التطور مصر</a></p>
 <h2>English</h2>
 <p>Inspection and written estimates in EGP. WhatsApp the Egypt desk with your city, compound, and job.</p>
 """,

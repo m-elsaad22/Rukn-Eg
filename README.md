@@ -4,7 +4,7 @@
 
 ## لماذا لم يظهر أي مقال في البحث؟
 
-موقع مصر ووردبريس مستقل تحت `/eg/`، لكن كان يحتوي فقط على «Hello world!»، بلا خريطة موقع، وبلا روابط دائمة (`permalink_structure` فارغ). مسارات مثل `/eg/wp-json/` و`/eg/sitemap_index.xml` تُرجع 404 من لايت سبيد. الواجهة البرمجية تعمل عبر:
+موقع مصر ووردبريس مستقل تحت `/eg/`. الروابط الدائمة الآن `/%postname%/` وخريطة Rank Math تعمل. الواجهة البرمجية:
 
 `https://rukn-eltatawer.com/eg/index.php?rest_route=/wp/v2/...`
 
@@ -14,17 +14,17 @@
 
 - يصحّح 421 مقالًا عربيًا: حالة **publish**، إزالة الصور المعطوبة، استبدال العناصر النائبة، نص مصري (محافظة / جنيه / مناخ / كمبوندات)، وربط داخلي، وSchema.
 - يولّد 421 مقالًا إنجليزيًا موازيًا (`*-en`) لاستهداف البحث بالإنجليزية.
-- ينشر عبر REST بعد ضبط التصنيفات والصفحات الأساسية.
+- ينشر عبر REST بعد ضبط التصنيفات والصفحات الأساسية، ثم يثبّت الروابط الدائمة وبيانات Rank Math.
 
 ```bash
 python3 tools/build_egypt_content.py
-WP_EG_USER=melsaad WP_EG_APP_PASSWORD='xxxx' python3 tools/publish_egypt.py
+WP_EG_USER=melsaad WP_EG_APP_PASSWORD='xxxx' python3 tools/harden_egypt_seo.py
 ```
 
-## بعد الرفع — لإكمال الفهرسة
+## الفهرسة
 
-1. من لوحة ووردبريس مصر: **الإعدادات ← الروابط الدائمة ← اسم المقالة** ثم حفظ. هذا يكتب قواعد `/eg/.htaccess` حتى تعمل `/eg/slug/` و`/eg/sitemap_index.xml` و`/eg/robots.txt`.
-2. أضف في `robots.txt` للموقع الرئيسي:  
-   `Sitemap: https://rukn-eltatawer.com/eg/sitemap_index.xml`
-3. أرسل خريطة الموقع في Search Console (نسخة مصر + الإنجليزية).
-4. ضع رقم واتساب/هاتف مصري (`+20`) في إعدادات القالب إن توفر؛ الرقم الحالي على الموقع هو واتساب الخليج المضبوط في `RuknCS`.
+الروابط الدائمة `/%postname%/` تعمل، وخريطة Rank Math على:
+
+https://rukn-eltatawer.com/eg/sitemap_index.xml
+
+وأُضيفت في روبوتس الموقع الرئيسي. المتبقي: إرسال الخريطة في Google Search Console.

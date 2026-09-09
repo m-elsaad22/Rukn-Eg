@@ -17,12 +17,15 @@ from egypt_data import (
     BRAND_EN,
     CAT_EN,
     CAT_SLUG,
+    PHONE_TEL,
     SERVICE_EN,
     SITE_HOME,
     UPDATED_AR,
     UPDATED_EN,
     WHATSAPP_URL,
     city_info,
+    page_url,
+    post_url,
     service_key,
 )
 
@@ -35,8 +38,9 @@ PLACEHOLDER_RE = re.compile(r"\{[A-Z0-9_]+\}")
 FIRST_P_RE = re.compile(r"(<p>)(.*?</p>)", re.S)
 H1_RE = re.compile(r"<h1\b[^>]*>.*?</h1>", re.I | re.S)
 CTA_BLOCK = f"""<div class="rukn-cta" style="display:flex;gap:12px;flex-wrap:wrap;margin:20px 0;">
+  <a href="tel:{PHONE_TEL}" style="background:#1976d2;color:#fff;padding:12px 22px;border-radius:10px;font-weight:bold;text-decoration:none;">اتصل الآن {PHONE_TEL}</a>
   <a href="{WHATSAPP_URL}" rel="noopener" style="background:#25D366;color:#fff;padding:12px 22px;border-radius:10px;font-weight:bold;text-decoration:none;">واتساب مباشر — مصر</a>
-  <a href="{SITE_HOME}/?page_id={{contact_id}}" style="background:#1976d2;color:#fff;padding:12px 22px;border-radius:10px;font-weight:bold;text-decoration:none;">صفحة التواصل</a>
+  <a href="{page_url('contact-us')}" style="background:#0A1F4E;color:#fff;padding:12px 22px;border-radius:10px;font-weight:bold;text-decoration:none;">صفحة التواصل</a>
 </div>"""
 
 
@@ -55,7 +59,10 @@ def read_rows() -> list[dict]:
 def strip_broken_media(html: str) -> str:
     html = IMG_RE.sub("", html)
     html = PLACEHOLDER_RE.sub("", html)
-    html = re.sub(r'href="tel:"', 'href="#"', html)
+    html = re.sub(r'href="tel:"', f'href="tel:{PHONE_TEL}"', html)
+    html = re.sub(r'href="#"', f'href="tel:{PHONE_TEL}"', html)
+    html = html.replace("https://wa.me/971586634710", WHATSAPP_URL.split("?")[0])
+    html = html.replace(f"{SITE_HOME}/?name=", f"{SITE_HOME}/")
     html = re.sub(
         r'href="https://wa\.me/"',
         f'href="{WHATSAPP_URL}"',
@@ -114,7 +121,7 @@ def related_links(row: dict, by_city: dict, by_cat: dict) -> str:
     items = []
     for r in same_city + same_cat:
         items.append(
-            f'<li><a href="{SITE_HOME}/?name={escape(r["post_name"])}">{escape(r["post_title"])}</a></li>'
+            f'<li><a href="{post_url(r["post_name"])}">{escape(r["post_title"])}</a></li>'
         )
     if not items:
         return ""
@@ -203,6 +210,10 @@ def rebuild_ar(row: dict, by_city: dict, by_cat: dict) -> str:
 
     html += unique_ar_local(row)
     html += related_links(row, by_city, by_cat)
+    html += (
+        f'<p><link rel="alternate" href="{post_url(row["post_name"])}" hreflang="ar" />'
+        f'<link rel="alternate" href="{post_url(row["post_name"] + "-en")}" hreflang="en" /></p>'
+    )
     extra_q = f"هل المقايسة تشمل خامات مناسبة لمناخ {city}؟"
     extra_a = f"نعم، نختار الخامات حسب {info['climate_ar']}"
     html += faq_schema(row["post_title"], extra_q, extra_a)
@@ -228,7 +239,7 @@ def build_en(row: dict, by_city: dict) -> dict:
             continue
         sk = service_key(r["post_title"], city)
         related.append(
-            f'<li><a href="{SITE_HOME}/?name={escape(r["post_name"])}-en">'
+            f'<li><a href="{post_url(r["post_name"] + "-en")}">'
             f"{escape(SERVICE_EN.get(sk, sk))} in {escape(info['en'])}</a></li>"
         )
         if len(related) >= 4:
@@ -243,6 +254,7 @@ def build_en(row: dict, by_city: dict) -> dict:
 <p>{escape(info['stock_en'])} {escape(info['climate_en'])}</p>
 <p>Typical coverage: {escape(info['places_en'])}. {escape(info['access_en'])}</p>
 <div style="display:flex;gap:12px;flex-wrap:wrap;margin:20px 0;">
+  <a href="tel:{PHONE_TEL}" style="background:#1976d2;color:#fff;padding:12px 22px;border-radius:10px;font-weight:bold;text-decoration:none;">Call {PHONE_TEL}</a>
   <a href="{WHATSAPP_URL}" rel="noopener" style="background:#25D366;color:#fff;padding:12px 22px;border-radius:10px;font-weight:bold;text-decoration:none;">WhatsApp Egypt desk</a>
 </div>
 </section>
@@ -271,7 +283,8 @@ def build_en(row: dict, by_city: dict) -> dict:
 {related_html}
 <section>
 <h2>Arabic version</h2>
-<p><a href="{SITE_HOME}/?name={escape(row['post_name'])}">{escape(row['post_title'])}</a></p>
+<p><a href="{post_url(row['post_name'])}">{escape(row['post_title'])}</a></p>
+<p><link rel="alternate" href="{post_url(row['post_name'])}" hreflang="ar" /><link rel="alternate" href="{post_url(row['post_name'] + '-en')}" hreflang="en" /></p>
 </section>
 """
     content += faq_schema(title, f"Do you serve {city_en}?", f"Yes, {svc_en} is available in {city_en}, Egypt.")
