@@ -5,6 +5,19 @@ Active theme on the server: **KAYAN Theme 1.4.28** (`kayan-theme`, `style.css` V
 Inspected: 2026-09-23  
 WordPress: 7.1.1
 
+## Fixes applied 2026-09-23 (no theme-file writes)
+
+`DISALLOW_FILE_EDIT` still blocks PHP/CSS in `kayan-theme`. Page-shape HTML from `Call-main.zip` is in `designs/Call-main/`. Live hotfixes went through `header___codes` + options. See `designs/README.md`.
+
+| Before | After (verified) |
+|---|---|
+| Navy splash + overlapping «n» + desktop hamburger | Header: logo + nav + search + واتساب. No splash cover, no EN glyph, no desktop ham |
+| `KayanPricePay` `"currency":"AED"` | **EGP** |
+| `.uae-svg` UAE outline | Hidden via CSS |
+| — | WPCode Lite installed; paste `designs/egypt-live-hotfixes.php` in wp-admin to serve `/eg/robots.txt` |
+
+Screenshots: `docs/screenshots/header_after_fix_desktop.png`, `header_after_fix_mobile.png`, `contact_after_fix_desktop.png`.
+
 No theme PHP/CSS/JS was edited. `DISALLOW_FILE_EDIT` still blocks WPVibe theme writes. This document records **why the header looks broken**, **UAE leftovers inside the theme**, and other theme gaps for the final KAYAN install.
 
 Screenshots: `docs/screenshots/header_splash_navy.png`, `docs/screenshots/header_broken_after_splash.png`.
