@@ -1,0 +1,61 @@
+/* Egypt /eg/ live header + UAE leftover hotfixes.
+   Injected via WordPress option header___codes (theme PHP cannot be edited: DISALLOW_FILE_EDIT).
+   Layout reference: designs/Call-main/*.html (header = logo + nav + search; no leaking lang menu).
+*/
+
+label[for], .finder-step label { unicode-bidi: isolate; }
+
+/* 1. Splash: do not cover the header */
+#loader {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+/* 2. Language dropdown must never sit in document flow */
+.rukn-lc,
+.kayan-header-lang {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  z-index: 40;
+}
+.rukn-lc-menu {
+  display: none !important;
+  position: absolute;
+  top: calc(100% + 8px);
+  inset-inline-end: 0;
+  min-width: 210px;
+  background: #fff;
+  color: #1c2e44;
+  border-radius: 18px;
+  box-shadow: 0 24px 60px rgba(1, 64, 152, .18);
+  padding: 10px 8px 8px;
+  text-align: start;
+}
+.rukn-lc.open .rukn-lc-menu,
+.kayan-header-lang.open .rukn-lc-menu {
+  display: block !important;
+}
+
+/* Call-main header has no language switcher; /eg/en/ is still an Arabic duplicate */
+header .rukn-lc,
+header .kayan-header-lang,
+#ruknMob .rukn-lc,
+#ruknMob .kayan-header-lang {
+  display: none !important;
+}
+
+/* 3. Desktop hamburger (class ham icon-btn loses to .icon-btn{display:grid}) */
+@media (min-width: 769px) {
+  header .ham,
+  header .ham.icon-btn,
+  .nav-cta .ham {
+    display: none !important;
+  }
+}
+
+/* 4. UAE map silhouette under Egypt governorates */
+.uae-svg {
+  display: none !important;
+}
