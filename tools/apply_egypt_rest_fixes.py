@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""REST-only Egypt follow-up: H1->H2, featured images, HTML sitemap. Never writes titles."""
+"""Gentle Egypt follow-up: H1->H2 via content/edit, thumbs via REST. Never writes titles."""
 
 from __future__ import annotations
 
@@ -19,142 +19,147 @@ FEATURED_ID = 1742
 CTX = ssl.create_default_context()
 
 
-def req(route, method="GET", data=None, timeout=90):
+def req(route, method="GET", data=None, timeout=60):
     url = f"{BASE}?rest_route={route}"
     body = None
     headers = {
         "Authorization": "Basic " + base64.b64encode(f"{USER}:{PASSWORD}".encode()).decode(),
         "Accept": "application/json",
-        "User-Agent": "rukn-egypt-rest-fix/1.0",
+        "User-Agent": "rukn-egypt-rest-fix/1.1",
     }
     if data is not None:
         body = json.dumps(data).encode()
         headers["Content-Type"] = "application/json"
-    request = urllib.request.Request(url, data=body, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(request, context=CTX, timeout=timeout) as resp:
-            raw = resp.read()
-            return resp.status, json.loads(raw) if raw else None
-    except urllib.error.HTTPError as exc:
-        raw = exc.read()
+    last = None
+    for attempt in range(5):
+        request = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
-            return exc.code, json.loads(raw)
-        except Exception:
-            return exc.code, raw.decode("utf-8", "replace")[:400]
+            with urllib.request.urlopen(request, context=CTX, timeout=timeout) as resp:
+                raw = resp.read()
+                return resp.status, json.loads(raw) if raw else None
+        except urllib.error.HTTPError as exc:
+            raw = exc.read()
+            if exc.code == 508:
+                wait = 4 + attempt * 5
+                print(f"  508 {route[:70]} sleep {wait}s", flush=True)
+                time.sleep(wait)
+                last = (exc.code, "508")
+                continue
+            try:
+                return exc.code, json.loads(raw)
+            except Exception:
+                return exc.code, raw.decode("utf-8", "replace")[:200]
+        except Exception as exc:
+            print(f"  err {exc} sleep", flush=True)
+            time.sleep(2 + attempt)
+            last = (0, str(exc))
+    return last or (0, "retries exhausted")
 
 
 def cli(command, confirm_write=False):
     return req("/wpvibe/v1/cli/run", "POST", {"command": command, "confirm_write": confirm_write})
 
 
-def assert_no_title(payload, context):
-    for key in payload:
-        if key in {"title", "rank_math_title", "post_title"} or str(key).endswith("_title"):
-            raise RuntimeError(f"refusing {key} in {context}")
+def content_edit_post(post_id: int, old: str, new: str):
+    return req(
+        "/wpvibe/v1/content/edit",
+        "POST",
+        {
+            "target_type": "post",
+            "post_id": post_id,
+            "field": "post_content",
+            "old_content": old,
+            "new_content": new,
+            "replace_all": True,
+        },
+    )
+
+
+def list_posts():
+    posts = []
+    page = 1
+    while True:
+        st, batch = req(f"/wp/v2/posts&per_page=100&page={page}&_fields=id,slug,featured_media,title")
+        if st != 200 or not isinstance(batch, list) or not batch:
+            break
+        posts.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+        time.sleep(0.2)
+    return posts
 
 
 def main():
     if not PASSWORD:
         raise SystemExit("Set WP_EG_APP_PASSWORD")
-
-    sample_slugs = {
+    posts = list_posts()
+    print("listed", len(posts), "thumbs", sum(1 for p in posts if p.get("featured_media")), flush=True)
+    sample = [p for p in posts if p.get("slug") in (
         "apartment-finishing-fifth-settlement-en",
         "apartment-finishing-fifth-settlement",
-    }
-    sample_ids = []
-    titles_before = {}
+    )]
+    before = {}
+    for p in sample:
+        st, meta = cli(f"wp post meta get {p['id']} rank_math_title")
+        before[p["id"]] = ((meta or {}).get("stdout") or "").strip()
+    print("seo before", before, flush=True)
 
-    h1_ok = thumb_ok = fail = 0
-    all_posts = []
-    page = 1
-    while True:
-        st, batch = req(
-            f"/wp/v2/posts&per_page=50&page={page}&context=edit&_fields=id,slug,content,featured_media,title"
-        )
-        if st != 200 or not isinstance(batch, list) or not batch:
-            print("list stop", page, st, flush=True)
-            break
-        print(f"page {page} n={len(batch)}", flush=True)
-        for p in batch:
-            pid = p["id"]
-            slug = p.get("slug") or ""
-            wp_title = (p.get("title") or {}).get("raw") or (p.get("title") or {}).get("rendered")
-            if slug in sample_slugs:
-                sample_ids.append(pid)
-                st_m, meta = cli(f"wp post meta get {pid} rank_math_title")
-                titles_before[pid] = {
-                    "slug": slug,
-                    "wp_title": wp_title,
-                    "rank_math_title": ((meta or {}).get("stdout") or "").strip(),
-                }
-            raw = ""
-            if isinstance(p.get("content"), dict):
-                raw = p["content"].get("raw") or ""
-            payload = {}
-            if "<h1>" in raw or "</h1>" in raw:
-                payload["content"] = raw.replace("<h1>", "<h2>").replace("</h1>", "</h2>")
-            if not p.get("featured_media"):
-                payload["featured_media"] = FEATURED_ID
-            if payload:
-                assert_no_title(payload, f"post {pid}")
-                st2, data = req(f"/wp/v2/posts/{pid}", "POST", payload)
-                if st2 in (200, 201):
-                    if "content" in payload:
-                        h1_ok += 1
-                    if "featured_media" in payload:
-                        thumb_ok += 1
-                else:
-                    fail += 1
-                    print("fail", pid, slug, st2, str(data)[:140], flush=True)
-            all_posts.append({"id": pid, "slug": slug, "title": wp_title})
-        if len(batch) < 50:
-            break
-        page += 1
-        time.sleep(0.05)
+    h1 = thumbs = skipped = fail = 0
+    for i, p in enumerate(posts, 1):
+        pid = p["id"]
+        st1, d1 = content_edit_post(pid, "<h1>", "<h2>")
+        if st1 == 200 and isinstance(d1, dict) and d1.get("replaced"):
+            content_edit_post(pid, "</h1>", "</h2>")
+            h1 += 1
+        elif st1 not in (200, 422):
+            fail += 1
+            print("h1 fail", pid, p.get("slug"), st1, str(d1)[:120], flush=True)
+        if not p.get("featured_media"):
+            payload = {"featured_media": FEATURED_ID}
+            st2, d2 = req(f"/wp/v2/posts/{pid}", "POST", payload)
+            if st2 in (200, 201):
+                thumbs += 1
+            else:
+                fail += 1
+                print("thumb fail", pid, p.get("slug"), st2, str(d2)[:120], flush=True)
+        else:
+            skipped += 1
+        if i % 25 == 0:
+            print(f"  {i}/{len(posts)} h1={h1} thumbs={thumbs} skip={skipped} fail={fail}", flush=True)
+        time.sleep(0.08)
 
-    print(f"posts={len(all_posts)} h1={h1_ok} thumbs={thumb_ok} fail={fail}", flush=True)
-    print("titles before", json.dumps(titles_before, ensure_ascii=False), flush=True)
-
-    st, pages = req("/wp/v2/pages&per_page=20&_fields=id,slug")
-    sitemap_id = None
-    for p in pages if isinstance(pages, list) else []:
-        if p.get("slug") == "html-sitemap":
-            sitemap_id = p["id"]
     items = []
-    for p in all_posts:
-        slug = p["slug"]
+    for p in posts:
+        slug = p.get("slug") or ""
+        title = p["title"]["rendered"] if isinstance(p.get("title"), dict) else p.get("title")
         href = f"{HOME}/en/{slug}/" if slug.endswith("-en") else f"{HOME}/{slug}/"
-        items.append(f'<li><a href="{href}">{p["title"]}</a></li>')
-    if sitemap_id:
-        payload = {"content": "<h2>صفحات ركن التطور مصر</h2><ul>" + "".join(items) + "</ul>"}
-        assert_no_title(payload, "sitemap")
-        st, data = req(f"/wp/v2/pages/{sitemap_id}", "POST", payload)
-        cli(f"wp post meta update {sitemap_id} rank_math_robots noindex,follow --force", True)
-        print("sitemap", sitemap_id, st, "links", len(items), flush=True)
+        items.append(f'<li><a href="{href}">{title}</a></li>')
+    st, pages = req("/wp/v2/pages&per_page=20&_fields=id,slug")
+    for page in pages if isinstance(pages, list) else []:
+        if page.get("slug") == "html-sitemap":
+            req(f"/wp/v2/pages/{page['id']}", "POST", {
+                "content": "<h2>صفحات ركن التطور مصر</h2><ul>" + "".join(items) + "</ul>"
+            })
+            cli(f"wp post meta update {page['id']} rank_math_robots noindex,follow --force", True)
+            print("sitemap", page["id"], "links", len(items), flush=True)
 
     cli("wp cache purge", True)
     cli("wp litespeed-purge all", True)
-
-    titles_after = {}
-    for pid in sample_ids:
-        st, post = req(f"/wp/v2/posts/{pid}&_fields=id,slug,title,featured_media")
-        st_m, meta = cli(f"wp post meta get {pid} rank_math_title")
-        titles_after[pid] = {
-            "slug": (post or {}).get("slug"),
+    after = {}
+    for p in sample:
+        st, meta = cli(f"wp post meta get {p['id']} rank_math_title")
+        st2, post = req(f"/wp/v2/posts/{p['id']}&_fields=id,title,featured_media")
+        after[p["id"]] = {
+            "rank_math_title": ((meta or {}).get("stdout") or "").strip(),
             "wp_title": ((post or {}).get("title") or {}).get("rendered"),
             "featured_media": (post or {}).get("featured_media"),
-            "rank_math_title": ((meta or {}).get("stdout") or "").strip(),
         }
-    print("titles after", json.dumps(titles_after, ensure_ascii=False), flush=True)
-    for pid, before in titles_before.items():
-        after = titles_after.get(pid) or {}
-        if before["rank_math_title"] != after.get("rank_math_title"):
-            print("ERROR rank_math_title changed", pid, flush=True)
-        if before["wp_title"] not in {after.get("wp_title"), None}:
-            # rendered may entity-encode; compare loosely
-            if before["wp_title"] != after.get("wp_title"):
-                print("WARN wp_title differs", pid, before["wp_title"], after.get("wp_title"), flush=True)
-    print("DONE", flush=True)
+    print("seo after", json.dumps(after, ensure_ascii=False), flush=True)
+    for pid, title in before.items():
+        if after.get(pid, {}).get("rank_math_title") != title:
+            print("ERROR title changed", pid, flush=True)
+    print(f"DONE h1={h1} thumbs={thumbs} skip={skipped} fail={fail}", flush=True)
 
 
 if __name__ == "__main__":
