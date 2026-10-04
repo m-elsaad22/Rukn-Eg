@@ -20,7 +20,6 @@ PASSWORD = os.environ.get("WP_EG_APP_PASSWORD", "")
 HOME = "https://www.rukn-eltatawer.com/eg"
 FEATURED_ID = 1742  # existing rukn-eltatawer-picture.webp
 CTX = ssl.create_default_context()
-TABLE = "ZeBDvesG5_posts"
 
 NOINDEX_JS = (
     'if(location.pathname.indexOf("/en/")!==-1){var m=document.createElement("meta");'
@@ -329,7 +328,11 @@ def fix_pages():
         payload = {"content": html}
         assert_no_title(payload, "html-sitemap")
         req(f"/wp/v2/pages/{sitemap_id}", "POST", payload)
-        cli(f"wp post meta update {sitemap_id} rank_math_robots noindex,follow --force", True)
+        req(
+            "/rankmath/v1/updateMeta",
+            "POST",
+            {"objectType": "post", "objectID": sitemap_id, "meta": {"rank_math_robots": ["noindex", "follow"]}},
+        )
         print("updated html-sitemap", sitemap_id, "links", len(items))
 
 

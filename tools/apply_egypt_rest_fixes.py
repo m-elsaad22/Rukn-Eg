@@ -141,7 +141,15 @@ def main():
             req(f"/wp/v2/pages/{page['id']}", "POST", {
                 "content": "<h2>صفحات ركن التطور مصر</h2><ul>" + "".join(items) + "</ul>"
             })
-            cli(f"wp post meta update {page['id']} rank_math_robots noindex,follow --force", True)
+            req(
+                "/rankmath/v1/updateMeta",
+                "POST",
+                {
+                    "objectType": "post",
+                    "objectID": page["id"],
+                    "meta": {"rank_math_robots": ["noindex", "follow"]},
+                },
+            )
             print("sitemap", page["id"], "links", len(items), flush=True)
 
     cli("wp cache purge", True)
