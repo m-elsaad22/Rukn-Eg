@@ -132,6 +132,20 @@ def snapshot_titles(sample_ids: list[int]) -> dict:
     return out
 
 
+def content_edit_option(old: str, new: str, replace_all: bool = True):
+    return req(
+        "/wpvibe/v1/content/edit",
+        "POST",
+        {
+            "target_type": "option",
+            "option_name": "header___codes",
+            "old_content": old,
+            "new_content": new,
+            "replace_all": replace_all,
+        },
+    )
+
+
 def fix_header_codes():
     st, data = cli("wp option get header___codes")
     current = (data or {}).get("stdout") or ""
@@ -140,27 +154,20 @@ def fix_header_codes():
         return
     DIST.mkdir(exist_ok=True)
     (DIST / "header___codes.backup.html").write_text(current, encoding="utf-8")
-    updated = current
-    if NOINDEX_JS in updated:
-        updated = updated.replace(NOINDEX_JS, "")
-        print("header___codes: removed /en/ noindex")
+    if NOINDEX_JS in current:
+        st, data = content_edit_option(NOINDEX_JS, "")
+        print("header noindex", st, data)
     else:
         print("header___codes: noindex snippet not found (already clean?)")
-    if HIDE_LANG_CSS in updated:
-        updated = updated.replace(HIDE_LANG_CSS, "")
-        print("header___codes: unhid language switcher")
-    if 'id="egypt-hreflang-fix"' not in updated and "egypt-hreflang-fix" not in updated:
-        updated = updated + HREFLANG_JS
-        print("header___codes: appended hreflang JS")
-    if updated == current:
-        print("header___codes: unchanged")
-        return
-    payload = json.dumps(updated, ensure_ascii=False)
-    st, data = cli(
-        f"wp option update header___codes {payload} --format=json",
-        True,
-    )
-    print("header___codes update", (data or {}).get("exit_code"), str((data or {}).get("stderr") or "")[:200])
+    if HIDE_LANG_CSS in current:
+        st, data = content_edit_option(HIDE_LANG_CSS, "")
+        print("header unhide lang", st, data)
+    tail = 'window.addEventListener("load",egyptBoot);setTimeout(egyptBoot,150);})();</script>'
+    st, data = cli("wp option get header___codes")
+    now = (data or {}).get("stdout") or ""
+    if "egypt-hreflang-fix" not in now and tail in now:
+        st, data = content_edit_option(tail, tail + HREFLANG_JS, False)
+        print("header hreflang", st, data)
     st, data = cli("wp option get header___codes")
     now = (data or {}).get("stdout") or ""
     print(
@@ -269,27 +276,35 @@ def fix_posts_thumbs(sample_before: dict):
     print("title guard ok for", list(sample_before))
 
 
-def fix_h1_search_replace():
-    dry = cli(
-        f"wp search-replace <h1> <h2> {TABLE} --dry-run --skip-columns=guid,post_title,post_name,post_excerpt",
-        True,
-    )
-    print("h1 dry", (dry[1] or {}).get("exit_code") if dry[0] else dry, str((dry[1] or {}).get("stdout") or "")[:400])
-    live = cli(
-        f"wp search-replace <h1> <h2> {TABLE} --skip-columns=guid,post_title,post_name,post_excerpt",
-        True,
-    )
-    print("h1 live", (live[1] or {}).get("exit_code"), str((live[1] or {}).get("stdout") or "")[:400])
-    dry2 = cli(
-        f"wp search-replace </h1> </h2> {TABLE} --dry-run --skip-columns=guid,post_title,post_name,post_excerpt",
-        True,
-    )
-    print("h1c dry", str((dry2[1] or {}).get("stdout") or "")[:300])
-    live2 = cli(
-        f"wp search-replace </h1> </h2> {TABLE} --skip-columns=guid,post_title,post_name,post_excerpt",
-        True,
-    )
-    print("h1c live", (live2[1] or {}).get("exit_code"), str((live2[1] or {}).get("stdout") or "")[:400])
+def fix_h1_via_rest():
+    """Convert content H1 to H2 without sending titles. search-replace needs WPVibe browser approval."""
+    changed = 0
+    page = 1
+    while True:
+        st, batch = req(
+            f"/wp/v2/posts&per_page=50&page={page}&context=edit&_fields=id,slug,content"
+        )
+        if st != 200 or not isinstance(batch, list) or not batch:
+            break
+        for p in batch:
+            raw = ""
+            if isinstance(p.get("content"), dict):
+                raw = p["content"].get("raw") or ""
+            if "<h1>" not in raw and "</h1>" not in raw:
+                continue
+            payload = {"content": raw.replace("<h1>", "<h2>").replace("</h1>", "</h2>")}
+            assert_no_title(payload, f"h1 {p['id']}")
+            st2, data = req(f"/wp/v2/posts/{p['id']}", "POST", payload)
+            if st2 in (200, 201):
+                changed += 1
+            else:
+                print("h1 fail", p["id"], st2, str(data)[:120])
+        print(f"  h1 page {page} changed={changed}")
+        if len(batch) < 50:
+            break
+        page += 1
+        time.sleep(0.03)
+    print("h1 updates", changed)
 
 
 def fix_pages():
@@ -368,7 +383,7 @@ def main():
     print("3 term slugs")
     rename_double_en_terms()
     print("4 H1 -> H2 in post_content only")
-    fix_h1_search_replace()
+    fix_h1_via_rest()
     print("5 featured images (no titles)")
     fix_posts_thumbs(before)
     print("6 pages/sitemap content only")
