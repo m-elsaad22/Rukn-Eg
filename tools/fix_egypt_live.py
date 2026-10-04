@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live Egypt fixes. Does NOT change rank_math_title / SEO titles."""
+"""Live Egypt fixes. Does NOT change rank_math_title / SEO titles / homepage_title."""
 
 from __future__ import annotations
 
@@ -10,18 +10,29 @@ import ssl
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+DIST = ROOT / "dist"
 BASE = "https://rukn-eltatawer.com/eg/index.php"
 USER = os.environ.get("WP_EG_USER", "melsaad")
 PASSWORD = os.environ.get("WP_EG_APP_PASSWORD", "")
 HOME = "https://www.rukn-eltatawer.com/eg"
 FEATURED_ID = 1742  # existing rukn-eltatawer-picture.webp
 CTX = ssl.create_default_context()
+TABLE = "ZeBDvesG5_posts"
 
 NOINDEX_JS = (
     'if(location.pathname.indexOf("/en/")!==-1){var m=document.createElement("meta");'
     'm.name="robots";m.content="noindex,follow";document.head.appendChild(m);}'
 )
+
+HIDE_LANG_CSS = (
+    "header .rukn-lc, header .kayan-header-lang, #ruknMob .rukn-lc, "
+    "#ruknMob .kayan-header-lang { display: none !important; }"
+)
+
+HREFLANG_JS = r"""<script id="egypt-hreflang-fix">(function(){var HOME="https://www.rukn-eltatawer.com/eg";function pair(){var path=location.pathname.replace(/\/+$/,"")||"/eg";var ar,en,slug,base;if(path==="/eg"||path==="/eg/en"){ar=HOME+"/";en=HOME+"/en/";}else if(path.indexOf("/eg/en/")===0){slug=path.split("/").filter(Boolean).pop();base=slug.replace(/-en$/,"");en=HOME+"/en/"+slug+"/";ar=HOME+"/"+base+"/";}else{slug=path.split("/").filter(Boolean).pop();ar=HOME+"/"+slug+"/";en=HOME+"/en/"+slug+"-en/";}return{ar:ar,en:en};}function apply(){if(!document.head)return;document.querySelectorAll('link[rel="alternate"][hreflang]').forEach(function(n){n.parentNode&&n.parentNode.removeChild(n);});var p=pair();[["ar",p.ar],["en",p.en],["x-default",p.ar]].forEach(function(x){var l=document.createElement("link");l.setAttribute("rel","alternate");l.setAttribute("hreflang",x[0]);l.setAttribute("href",x[1]);document.head.appendChild(l);});}apply();if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",apply);setTimeout(apply,0);setTimeout(apply,250);})();</script>"""
 
 HREFLANG_SNIPPET = r"""
 add_action('template_redirect', function () {
@@ -62,6 +73,13 @@ add_action('wp_head', function () {
     echo '<link rel="alternate" hreflang="en" href="' . esc_url($en) . '" />' . "\n";
     echo '<link rel="alternate" hreflang="x-default" href="' . esc_url($ar) . '" />' . "\n";
 }, 20);
+
+add_filter('robots_txt', function ($output, $public) {
+    $body = "User-Agent: *\nAllow: /\nAllow: /wp-admin/admin-ajax.php\nAllow: /wp-content/uploads/\n";
+    $body .= "Disallow: /wp-admin/\nDisallow: /wp-includes/\nDisallow: /wp-content/plugins/\n";
+    $body .= "Sitemap: https://www.rukn-eltatawer.com/eg/sitemap_index.xml\n";
+    return $body;
+}, 99, 2);
 """.strip()
 
 
@@ -71,7 +89,7 @@ def req(route, method="GET", data=None, timeout=90):
     headers = {
         "Authorization": "Basic " + base64.b64encode(f"{USER}:{PASSWORD}".encode()).decode(),
         "Accept": "application/json",
-        "User-Agent": "rukn-egypt-fix/1.0",
+        "User-Agent": "rukn-egypt-fix/1.1",
     }
     if data is not None:
         body = json.dumps(data).encode()
@@ -93,21 +111,65 @@ def cli(command, confirm_write=False):
     return req("/wpvibe/v1/cli/run", "POST", {"command": command, "confirm_write": confirm_write})
 
 
+def assert_no_title(payload: dict, context: str) -> None:
+    banned = ("title", "rank_math_title", "post_title")
+    for key in payload:
+        if key in banned or key.endswith("_title"):
+            raise RuntimeError(f"refusing to send {key} in {context}")
+
+
+def snapshot_titles(sample_ids: list[int]) -> dict:
+    out = {}
+    for pid in sample_ids:
+        st, data = cli(f"wp post meta get {pid} rank_math_title")
+        title_meta = (data or {}).get("stdout") if isinstance(data, dict) else ""
+        st, post = req(f"/wp/v2/posts/{pid}&_fields=id,slug,title")
+        out[pid] = {
+            "rank_math_title": (title_meta or "").strip(),
+            "wp_title": ((post or {}).get("title") or {}).get("rendered") if isinstance(post, dict) else None,
+            "slug": (post or {}).get("slug") if isinstance(post, dict) else None,
+        }
+    return out
+
+
 def fix_header_codes():
     st, data = cli("wp option get header___codes")
     current = (data or {}).get("stdout") or ""
     if not current:
         print("WARN empty header___codes", st, data)
         return
-    if NOINDEX_JS not in current:
+    DIST.mkdir(exist_ok=True)
+    (DIST / "header___codes.backup.html").write_text(current, encoding="utf-8")
+    updated = current
+    if NOINDEX_JS in updated:
+        updated = updated.replace(NOINDEX_JS, "")
+        print("header___codes: removed /en/ noindex")
+    else:
         print("header___codes: noindex snippet not found (already clean?)")
+    if HIDE_LANG_CSS in updated:
+        updated = updated.replace(HIDE_LANG_CSS, "")
+        print("header___codes: unhid language switcher")
+    if 'id="egypt-hreflang-fix"' not in updated and "egypt-hreflang-fix" not in updated:
+        updated = updated + HREFLANG_JS
+        print("header___codes: appended hreflang JS")
+    if updated == current:
+        print("header___codes: unchanged")
         return
-    updated = current.replace(NOINDEX_JS, "")
+    payload = json.dumps(updated, ensure_ascii=False)
     st, data = cli(
-        "wp option update header___codes " + json.dumps(updated, ensure_ascii=False),
+        f"wp option update header___codes {payload} --format=json",
         True,
     )
-    print("header___codes update", (data or {}).get("exit_code"), (data or {}).get("stdout", "")[:200])
+    print("header___codes update", (data or {}).get("exit_code"), str((data or {}).get("stderr") or "")[:200])
+    st, data = cli("wp option get header___codes")
+    now = (data or {}).get("stdout") or ""
+    print(
+        "header verify",
+        "noindex" in now,
+        "hreflang-fix" in now,
+        "len",
+        len(now),
+    )
 
 
 def add_hreflang_snippet():
@@ -116,60 +178,58 @@ def add_hreflang_snippet():
         "POST",
         {
             "action": "create",
-            "title": "Egypt hreflang www + /en/ (do not edit SEO titles)",
+            "title": "Egypt hreflang www + /en/ + robots (do not edit SEO titles)",
             "code": HREFLANG_SNIPPET,
             "code_type": "php",
             "location": "everywhere",
             "insert_method": "auto",
         },
     )
-    print("snippet", st, str(data)[:500])
+    print("snippet", st, str(data)[:400])
 
 
 def rename_double_en_terms():
-    for tax in ("cities", "category", "service_categories"):
-        st, data = cli(f"wp term list {tax} --number=400 --format=json")
-        if not (data or {}).get("stdout"):
-            print("no terms", tax, data)
-            continue
-        rows = json.loads(data["stdout"])
-        by_slug = {r["slug"]: r for r in rows}
+    tax_routes = {
+        "cities": "/wp/v2/cities",
+        "categories": "/wp/v2/categories",
+        "service_categories": "/wp/v2/service_categories",
+    }
+    for tax, route in tax_routes.items():
+        rows = []
+        page = 1
+        while True:
+            st, data = req(f"{route}&per_page=100&page={page}")
+            if st != 200 or not isinstance(data, list) or not data:
+                break
+            rows.extend(data)
+            if len(data) < 100:
+                break
+            page += 1
+        by_slug = {r.get("slug"): r for r in rows}
+        changed = 0
         for row in rows:
-            slug = row["slug"]
+            slug = row.get("slug") or ""
             if not slug.endswith("-en-en"):
                 continue
-            target = slug[:-3]  # drop last -en -> foo-en
+            target = slug[:-3]
             empty = by_slug.get(target)
-            if empty and empty["term_id"] != row["term_id"]:
-                # free the short slug
-                park = target + "-unused"
-                cli(
-                    f"wp term update {tax} {empty['term_id']} --by=id --slug={park}",
-                    True,
-                )
-            st2, data2 = cli(
-                f"wp term update {tax} {row['term_id']} --by=id --slug={target}",
-                True,
-            )
-            print(
-                "term",
-                tax,
-                slug,
-                "->",
-                target,
-                (data2 or {}).get("exit_code"),
-            )
+            if empty and empty.get("id") != row.get("id"):
+                park = f"{target}-unused"
+                st, data = req(f"{route}/{empty['id']}", "POST", {"slug": park})
+                print("park", tax, target, "->", park, st)
+            payload = {"slug": target}
+            st, data = req(f"{route}/{row['id']}", "POST", payload)
+            print("term", tax, slug, "->", target, st, (data or {}).get("slug") if isinstance(data, dict) else data)
+            if st in (200, 201):
+                changed += 1
+        print("terms done", tax, "changed", changed, "total", len(rows))
 
 
-def rest_posts():
-    st, first_headers_body = None, None
-    url_path = "/wp/v2/posts&per_page=100&page=1&_fields=id,slug,content,featured_media,type"
-    # use req
-    # headers not returned separately easily; call raw
+def rest_posts(fields="id,slug,featured_media"):
     posts = []
     page = 1
     while True:
-        st, data = req(f"/wp/v2/posts&per_page=100&page={page}&_fields=id,slug,featured_media")
+        st, data = req(f"/wp/v2/posts&per_page=100&page={page}&_fields={fields}")
         if st != 200 or not isinstance(data, list) or not data:
             break
         posts.extend(data)
@@ -179,51 +239,63 @@ def rest_posts():
     return posts
 
 
-def rest_get_content(post_id):
-    st, data = req(f"/wp/v2/posts/{post_id}&context=edit&_fields=id,content,featured_media")
-    return data if st == 200 else None
-
-
-def fix_posts_h1_and_thumbs():
+def fix_posts_thumbs(sample_before: dict):
     posts = rest_posts()
     print("posts", len(posts))
     ok = 0
+    skipped = 0
     for i, p in enumerate(posts, 1):
-        payload = {}
-        if not p.get("featured_media"):
-            payload["featured_media"] = FEATURED_ID
-        full = rest_get_content(p["id"])
-        raw = ""
-        if isinstance(full, dict):
-            raw = (full.get("content") or {}).get("raw") or (full.get("content") or {}).get("rendered") or ""
-        if "<h1>" in raw:
-            payload["content"] = raw.replace("<h1>", "<h2>").replace("</h1>", "</h2>")
-        if payload:
-            # never send title
-            st, data = req(f"/wp/v2/posts/{p['id']}", "POST", payload)
-            if st in (200, 201):
-                ok += 1
-            else:
-                print("post fail", p["id"], p["slug"], st, str(data)[:160])
-        if i % 50 == 0:
-            print(f"  posts {i}/{len(posts)} changed={ok}")
-        time.sleep(0.03)
-    print("post updates", ok)
+        if p.get("featured_media"):
+            skipped += 1
+            continue
+        payload = {"featured_media": FEATURED_ID}
+        assert_no_title(payload, f"post {p['id']}")
+        st, data = req(f"/wp/v2/posts/{p['id']}", "POST", payload)
+        if st in (200, 201):
+            ok += 1
+        else:
+            print("thumb fail", p["id"], p.get("slug"), st, str(data)[:160])
+        if i % 100 == 0:
+            print(f"  thumbs {i}/{len(posts)} set={ok} skipped={skipped}")
+        time.sleep(0.02)
+    print("thumb updates", ok, "already set", skipped)
+    sample_after = snapshot_titles(list(sample_before))
+    for pid, before in sample_before.items():
+        after = sample_after.get(pid) or {}
+        if before.get("rank_math_title") != after.get("rank_math_title"):
+            print("ERROR SEO title changed", pid, before, after)
+        if before.get("wp_title") != after.get("wp_title"):
+            print("ERROR WP title changed", pid, before, after)
+    print("title guard ok for", list(sample_before))
+
+
+def fix_h1_search_replace():
+    dry = cli(
+        f"wp search-replace <h1> <h2> {TABLE} --dry-run --skip-columns=guid,post_title,post_name,post_excerpt",
+        True,
+    )
+    print("h1 dry", (dry[1] or {}).get("exit_code") if dry[0] else dry, str((dry[1] or {}).get("stdout") or "")[:400])
+    live = cli(
+        f"wp search-replace <h1> <h2> {TABLE} --skip-columns=guid,post_title,post_name,post_excerpt",
+        True,
+    )
+    print("h1 live", (live[1] or {}).get("exit_code"), str((live[1] or {}).get("stdout") or "")[:400])
+    dry2 = cli(
+        f"wp search-replace </h1> </h2> {TABLE} --dry-run --skip-columns=guid,post_title,post_name,post_excerpt",
+        True,
+    )
+    print("h1c dry", str((dry2[1] or {}).get("stdout") or "")[:300])
+    live2 = cli(
+        f"wp search-replace </h1> </h2> {TABLE} --skip-columns=guid,post_title,post_name,post_excerpt",
+        True,
+    )
+    print("h1c live", (live2[1] or {}).get("exit_code"), str((live2[1] or {}).get("stdout") or "")[:400])
 
 
 def fix_pages():
     st, pages = req("/wp/v2/pages&per_page=20&_fields=id,slug,link,title")
     print("pages", pages)
-    # html sitemap
-    st, posts = req("/wp/v2/posts&per_page=100&page=1&_fields=id,slug,title,link")
-    all_posts = list(posts) if isinstance(posts, list) else []
-    page = 2
-    while True:
-        st, batch = req(f"/wp/v2/posts&per_page=100&page={page}&_fields=id,slug,title,link")
-        if st != 200 or not isinstance(batch, list) or not batch:
-            break
-        all_posts.extend(batch)
-        page += 1
+    all_posts = rest_posts("id,slug,title,link")
     items = []
     for p in all_posts:
         slug = p["slug"]
@@ -233,63 +305,80 @@ def fix_pages():
         else:
             href = f"{HOME}/{slug}/"
         items.append(f'<li><a href="{href}">{title}</a></li>')
-    html = (
-        "<h2>صفحات ركن التطور مصر</h2><ul>"
-        + "".join(items)
-        + "</ul>"
-    )
-    # find sitemap page
+    html = "<h2>صفحات ركن التطور مصر</h2><ul>" + "".join(items) + "</ul>"
     sitemap_id = None
     for p in pages if isinstance(pages, list) else []:
         if p.get("slug") == "html-sitemap":
             sitemap_id = p["id"]
     if sitemap_id:
-        req(
-            f"/wp/v2/pages/{sitemap_id}",
-            "POST",
-            {"content": html},
-        )
-        cli(f'wp post meta update {sitemap_id} rank_math_robots "noindex,follow" --force', True)
+        payload = {"content": html}
+        assert_no_title(payload, "html-sitemap")
+        req(f"/wp/v2/pages/{sitemap_id}", "POST", payload)
+        cli(f"wp post meta update {sitemap_id} rank_math_robots noindex,follow --force", True)
         print("updated html-sitemap", sitemap_id, "links", len(items))
-    # do not change page titles
 
 
 def try_robots_txt():
-    # Rank Math virtual robots if option exists; also flush cache.
-    st, data = cli("wp option pluck rank-math-options-general robots")
-    print("rm robots key", data)
+    st, data = cli("wp rewrite flush", True)
+    print("rewrite flush", (data or {}).get("exit_code"), str(data)[:250])
+    st, data = cli("wp rewrite list")
+    out = (data or {}).get("stdout") or ""
+    print("rewrite has robots", "robots" in str(out))
     robots = (
         "User-Agent: *\n"
         "Allow: /\n"
-        "Disallow: /wp-admin/\n"
         "Allow: /wp-admin/admin-ajax.php\n"
+        "Allow: /wp-content/uploads/\n"
+        "Disallow: /wp-admin/\n"
+        "Disallow: /wp-includes/\n"
+        "Disallow: /wp-content/plugins/\n"
         "Sitemap: https://www.rukn-eltatawer.com/eg/sitemap_index.xml\n"
     )
-    st, data = cli(
-        "wp option patch update rank-math-options-general robots "
-        + json.dumps(robots),
-        True,
-    )
-    print("robots patch", st, str(data)[:400])
+    for key in (
+        "rank-math-options-general",
+        "rank_math_robots_txt",
+    ):
+        st, data = cli(
+            f"wp option patch update {key} robots {json.dumps(robots)}",
+            True,
+        )
+        print("robots patch", key, st, str(data)[:250])
 
 
 def main():
     if not PASSWORD:
         raise SystemExit("Set WP_EG_APP_PASSWORD")
-    print("1 header noindex")
+    posts = rest_posts("id,slug")
+    sample_ids = []
+    for p in posts:
+        if p.get("slug") in (
+            "apartment-finishing-fifth-settlement-en",
+            "apartment-finishing-fifth-settlement",
+        ):
+            sample_ids.append(p["id"])
+    if not sample_ids and posts:
+        sample_ids = [posts[0]["id"], posts[-1]["id"]]
+    before = snapshot_titles(sample_ids)
+    print("SEO titles before (must stay)", json.dumps(before, ensure_ascii=False))
+
+    print("1 header noindex + hreflang JS")
     fix_header_codes()
-    print("2 hreflang snippet")
+    print("2 php snippet (may need WPVibe approval)")
     add_hreflang_snippet()
     print("3 term slugs")
     rename_double_en_terms()
-    print("4 posts H1 + thumbs (no titles)")
-    fix_posts_h1_and_thumbs()
-    print("5 pages/sitemap")
+    print("4 H1 -> H2 in post_content only")
+    fix_h1_search_replace()
+    print("5 featured images (no titles)")
+    fix_posts_thumbs(before)
+    print("6 pages/sitemap content only")
     fix_pages()
-    print("6 robots attempt")
+    print("7 robots / rewrite")
     try_robots_txt()
     cli("wp cache flush", True)
     cli("wp litespeed-purge all", True)
+    after = snapshot_titles(sample_ids)
+    print("SEO titles after (must match)", json.dumps(after, ensure_ascii=False))
     print("DONE")
 
 
