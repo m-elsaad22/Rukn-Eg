@@ -24,7 +24,9 @@
 نُصّب **WPCode Lite**. إنشاء snippet من CLI محظور (يحتاج موافقة WPVibe). الصق `egypt-live-hotfixes.php` كـ PHP / Run Everywhere / Active لكي:
 
 - يُخرج `/eg/robots.txt` كنص بدل 404
-- `noindex` لمسار `/en/`
+- `noindex` لمسار `/en/` بما فيها الرئيسية الإنجليزية `/eg/en/` (بقية أرشيفات `/en/` و`unused` أُغلقت من Rank Math مباشرة)
+
+تفاصيل Search Console: `docs/egypt-gsc-index-fixes.md`.
 
 ## ما لا يُحل بدون تعديل ملفات القالب
 
