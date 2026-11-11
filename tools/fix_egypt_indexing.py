@@ -69,8 +69,19 @@ def sql(query, limit=1000):
 
 
 def rm_bulk(ids):
-    rows = {int(i): {"rank_math_robots": INDEX} for i in ids}
-    return req("/rankmath/v1/updateMetaBulk", "POST", {"rows": rows})
+    """updateMetaBulk reports success but does not persist robots. Use per-post updateMeta."""
+    ok = fail = 0
+    for i, pid in enumerate(ids, 1):
+        st, data = rm_meta("post", pid, {"rank_math_robots": INDEX})
+        if st == 200:
+            ok += 1
+        else:
+            fail += 1
+            print("post fail", pid, st, str(data)[:120], flush=True)
+        if i % 50 == 0:
+            print(f"  posts {i}/{len(ids)} ok={ok} fail={fail}", flush=True)
+        time.sleep(0.04)
+    return 200, {"ok": ok, "fail": fail}
 
 
 def rm_meta(object_type, object_id, meta):
