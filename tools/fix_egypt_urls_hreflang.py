@@ -52,9 +52,11 @@ def req(route, method="GET", data=None, timeout=90):
                 return resp.status, json.loads(raw) if raw else None
         except urllib.error.HTTPError as exc:
             raw = exc.read()
-            if exc.code == 508:
-                time.sleep(4 + attempt * 4)
-                last = (exc.code, "508")
+            if exc.code in (508, 503, 502, 429):
+                wait = 5 + attempt * 6
+                print(f"  HTTP {exc.code} {route[:70]} sleep {wait}s", flush=True)
+                time.sleep(wait)
+                last = (exc.code, str(exc.code))
                 continue
             try:
                 return exc.code, json.loads(raw)
@@ -124,31 +126,58 @@ def main():
         sample[pid] = snapshot(pid)
     print("SEO titles before", json.dumps(sample, ensure_ascii=False), flush=True)
 
-    changed = fail = scanned = 0
-    for kind, route in (("post", "/wp/v2/posts"), ("page", "/wp/v2/pages")):
-        for item in walk(route):
-            scanned += 1
-            slug = item.get("slug") or ""
-            raw = ""
-            if isinstance(item.get("content"), dict):
-                raw = item["content"].get("raw") or ""
-            if not raw:
-                continue
-            new = rewrite_html(raw, slug)
-            if new == raw:
-                continue
+    rows = []
+    st, data = cli(
+        'wp db query "SELECT ID, post_name, post_type FROM ZeBDvesG5_posts '
+        "WHERE post_status='publish' AND post_type IN ('post','page') "
+        "AND (post_content LIKE '%rukn-eltatawer.com/eg%' "
+        "OR post_content LIKE '%hreflang%')\" --limit=2000"
+    )
+    out = (data or {}).get("stdout") if isinstance(data, dict) else ""
+    try:
+        rows = json.loads(out or "{}").get("results") or []
+    except Exception:
+        rows = []
+    print("candidates", len(rows), flush=True)
+
+    changed = fail = scanned = skipped = 0
+    for row in rows:
+        scanned += 1
+        pid = int(row["ID"])
+        slug = row.get("post_name") or ""
+        kind = row.get("post_type") or "post"
+        route = "/wp/v2/posts" if kind == "post" else "/wp/v2/pages"
+        st, item = req(f"{route}/{pid}&context=edit&_fields=id,slug,content")
+        raw = ""
+        if isinstance(item, dict) and isinstance(item.get("content"), dict):
+            raw = item["content"].get("raw") or ""
+        if not raw:
+            fail += 1
+            print("empty", pid, slug, st, flush=True)
+            time.sleep(0.2)
+            continue
+        new = rewrite_html(raw, slug)
+        if new == raw:
+            skipped += 1
+        else:
             payload = {"content": new}
-            assert_no_title(payload, f"{kind} {item['id']}")
-            st, data = req(f"{route}/{item['id']}", "POST", payload)
+            assert_no_title(payload, f"{kind} {pid}")
+            st, data = req(f"{route}/{pid}", "POST", payload)
             if st in (200, 201):
                 changed += 1
             else:
                 fail += 1
-                print("fail", kind, item["id"], slug, st, str(data)[:120], flush=True)
-            if scanned % 50 == 0:
-                print(f"  scanned={scanned} changed={changed} fail={fail}", flush=True)
-            time.sleep(0.05)
-    print(f"content scanned={scanned} changed={changed} fail={fail}", flush=True)
+                print("fail", kind, pid, slug, st, str(data)[:120], flush=True)
+        if scanned % 25 == 0:
+            print(
+                f"  scanned={scanned}/{len(rows)} changed={changed} skip={skipped} fail={fail}",
+                flush=True,
+            )
+        time.sleep(0.12)
+    print(
+        f"content scanned={scanned} changed={changed} skip={skipped} fail={fail}",
+        flush=True,
+    )
 
     cli(
         'wp option patch insert rewrite_rules "robots\\.txt$" "index.php?robots=1"',
