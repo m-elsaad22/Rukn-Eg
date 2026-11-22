@@ -152,7 +152,7 @@ def configure_site() -> None:
 
 
 def create_pages(state: dict, posts: list[dict]) -> None:
-    home = "https://rukn-eltatawer.com/eg"
+    home = "https://www.rukn-eltatawer.com/eg"
     html_map = [
         f'<li lang="{item.get("lang","ar")}"><a href="{home}/?name={item["post_name"]}">{item["post_title"]}</a></li>'
         for item in posts
@@ -214,7 +214,7 @@ def delete_noise() -> None:
 
 def build_menu(state: dict) -> None:
     cli("wp menu create Egypt --porcelain", True)
-    home = "https://rukn-eltatawer.com/eg/"
+    home = "https://www.rukn-eltatawer.com/eg/"
     cli(f"wp menu item add-custom Egypt الرئيسية {home}", True)
     for slug in ("contact-us", "about-egypt", "html-sitemap"):
         if slug in state["pages"]:

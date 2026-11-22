@@ -114,7 +114,7 @@ def related_links(row: dict, by_city: dict, by_cat: dict) -> str:
     items = []
     for r in same_city + same_cat:
         items.append(
-            f'<li><a href="{SITE_HOME}/?name={escape(r["post_name"])}">{escape(r["post_title"])}</a></li>'
+            f'<li><a href="{SITE_HOME}/{escape(r["post_name"])}/">{escape(r["post_title"])}</a></li>'
         )
     if not items:
         return ""
@@ -228,7 +228,7 @@ def build_en(row: dict, by_city: dict) -> dict:
             continue
         sk = service_key(r["post_title"], city)
         related.append(
-            f'<li><a href="{SITE_HOME}/?name={escape(r["post_name"])}-en">'
+            f'<li><a href="{SITE_HOME}/en/{escape(r["post_name"])}-en/">'
             f"{escape(SERVICE_EN.get(sk, sk))} in {escape(info['en'])}</a></li>"
         )
         if len(related) >= 4:
@@ -271,7 +271,8 @@ def build_en(row: dict, by_city: dict) -> dict:
 {related_html}
 <section>
 <h2>Arabic version</h2>
-<p><a href="{SITE_HOME}/?name={escape(row['post_name'])}">{escape(row['post_title'])}</a></p>
+<p><a href="{SITE_HOME}/{escape(row['post_name'])}/">{escape(row['post_title'])}</a></p>
+<p><link rel="alternate" href="{SITE_HOME}/{escape(row['post_name'])}/" hreflang="ar" /><link rel="alternate" href="{SITE_HOME}/en/{escape(row['post_name'])}-en/" hreflang="en" /><link rel="alternate" href="{SITE_HOME}/{escape(row['post_name'])}/" hreflang="x-default" /></p>
 </section>
 """
     content += faq_schema(title, f"Do you serve {city_en}?", f"Yes, {svc_en} is available in {city_en}, Egypt.")

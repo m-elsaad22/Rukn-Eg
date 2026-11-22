@@ -3,7 +3,7 @@
 # Live WhatsApp on rukn-eltatawer.com/eg (RuknCS.wa_number). No Egypt DID is configured.
 WHATSAPP_INTL = "971586634710"
 WHATSAPP_URL = f"https://wa.me/{WHATSAPP_INTL}?text=%D9%85%D8%B1%D8%AD%D8%A8%D8%A7%D9%8B%20%D8%B1%D9%83%D9%86%20%D8%A7%D9%84%D8%AA%D8%B7%D9%88%D8%B1%20%D9%85%D8%B5%D8%B1"
-SITE_HOME = "https://rukn-eltatawer.com/eg"
+SITE_HOME = "https://www.rukn-eltatawer.com/eg"
 BRAND_AR = "ركن التطور"
 BRAND_EN = "Rukn El Tatawer"
 UPDATED_AR = "سبتمبر 2026"
