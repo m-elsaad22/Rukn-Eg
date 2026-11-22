@@ -7,10 +7,13 @@ import base64
 import json
 import os
 import re
+import socket
 import ssl
 import time
 import urllib.error
 import urllib.request
+
+socket.setdefaulttimeout(40)
 
 BASE = "https://rukn-eltatawer.com/eg/index.php"
 USER = os.environ.get("WP_EG_USER", "melsaad")
@@ -126,19 +129,56 @@ def main():
         sample[pid] = snapshot(pid)
     print("SEO titles before", json.dumps(sample, ensure_ascii=False), flush=True)
 
-    rows = []
     st, data = cli(
         'wp db query "SELECT ID, post_name, post_type FROM ZeBDvesG5_posts '
         "WHERE post_status='publish' AND post_type IN ('post','page') "
-        "AND (post_content LIKE '%rukn-eltatawer.com/eg%' "
-        "OR post_content LIKE '%hreflang%')\" --limit=2000"
+        "AND post_content LIKE '%://rukn-eltatawer.com/eg%'\" --limit=2000"
     )
     out = (data or {}).get("stdout") if isinstance(data, dict) else ""
     try:
         rows = json.loads(out or "{}").get("results") or []
     except Exception:
         rows = []
-    print("candidates", len(rows), flush=True)
+    print("non-www candidates", len(rows), flush=True)
+
+    www_ok = www_skip = www_fail = 0
+    for i, row in enumerate(rows, 1):
+        pid = int(row["ID"])
+        st, data = req(
+            "/wpvibe/v1/content/edit",
+            "POST",
+            {
+                "target_type": "post",
+                "post_id": pid,
+                "field": "post_content",
+                "old_content": "https://rukn-eltatawer.com/eg",
+                "new_content": HOME,
+                "replace_all": True,
+            },
+        )
+        if st == 200:
+            www_ok += 1
+        elif st == 422:
+            www_skip += 1
+        else:
+            www_fail += 1
+            print("www fail", pid, row.get("post_name"), st, str(data)[:120], flush=True)
+        if i % 50 == 0:
+            print(f"  www {i}/{len(rows)} ok={www_ok} skip={www_skip} fail={www_fail}", flush=True)
+        time.sleep(0.05)
+    print(f"www ok={www_ok} skip={www_skip} fail={www_fail}", flush=True)
+
+    st, data = cli(
+        'wp db query "SELECT ID, post_name, post_type FROM ZeBDvesG5_posts '
+        "WHERE post_status='publish' AND post_type IN ('post','page') "
+        "AND post_content LIKE '%hreflang%'\" --limit=2000"
+    )
+    out = (data or {}).get("stdout") if isinstance(data, dict) else ""
+    try:
+        rows = json.loads(out or "{}").get("results") or []
+    except Exception:
+        rows = []
+    print("hreflang candidates", len(rows), flush=True)
 
     changed = fail = scanned = skipped = 0
     for row in rows:
@@ -154,7 +194,7 @@ def main():
         if not raw:
             fail += 1
             print("empty", pid, slug, st, flush=True)
-            time.sleep(0.2)
+            time.sleep(0.3)
             continue
         new = rewrite_html(raw, slug)
         if new == raw:
@@ -170,12 +210,12 @@ def main():
                 print("fail", kind, pid, slug, st, str(data)[:120], flush=True)
         if scanned % 25 == 0:
             print(
-                f"  scanned={scanned}/{len(rows)} changed={changed} skip={skipped} fail={fail}",
+                f"  hreflang {scanned}/{len(rows)} changed={changed} skip={skipped} fail={fail}",
                 flush=True,
             )
-        time.sleep(0.12)
+        time.sleep(0.08)
     print(
-        f"content scanned={scanned} changed={changed} skip={skipped} fail={fail}",
+        f"hreflang scanned={scanned} changed={changed} skip={skipped} fail={fail}",
         flush=True,
     )
 
