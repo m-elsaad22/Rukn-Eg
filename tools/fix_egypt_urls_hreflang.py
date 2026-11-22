@@ -47,7 +47,7 @@ def req(route, method="GET", data=None, timeout=90):
         body = json.dumps(data).encode()
         headers["Content-Type"] = "application/json"
     last = None
-    for attempt in range(5):
+    for attempt in range(8):
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, context=CTX, timeout=timeout) as resp:
@@ -56,7 +56,7 @@ def req(route, method="GET", data=None, timeout=90):
         except urllib.error.HTTPError as exc:
             raw = exc.read()
             if exc.code in (508, 503, 502, 429):
-                wait = 5 + attempt * 6
+                wait = 6 + attempt * 7
                 print(f"  HTTP {exc.code} {route[:70]} sleep {wait}s", flush=True)
                 time.sleep(wait)
                 last = (exc.code, str(exc.code))
@@ -121,6 +121,68 @@ def walk(route, extra_fields=""):
         time.sleep(0.15)
 
 
+def db_rows(sql: str) -> list:
+    st, data = cli(f'wp db query "{sql}" --limit=2000')
+    out = (data or {}).get("stdout") if isinstance(data, dict) else ""
+    try:
+        return json.loads(out or "{}").get("results") or []
+    except Exception:
+        print("db parse fail", st, str(data)[:200], flush=True)
+        return []
+
+
+def remaining_rows() -> list:
+    return db_rows(
+        "SELECT ID, post_name, post_type FROM ZeBDvesG5_posts "
+        "WHERE post_status='publish' AND post_type IN ('post','page') "
+        "AND post_content LIKE '%rukn-eltatawer.com/eg/%-en/%' "
+        "AND post_content NOT LIKE '%/eg/en/%-en/%'"
+    )
+
+
+def content_edit(pid: int, old: str, new: str, replace_all: bool = True):
+    return req(
+        "/wpvibe/v1/content/edit",
+        "POST",
+        {
+            "target_type": "post",
+            "post_id": pid,
+            "field": "post_content",
+            "old_content": old,
+            "new_content": new,
+            "replace_all": replace_all,
+        },
+    )
+
+
+def rewrite_one(row: dict) -> str:
+    pid = int(row["ID"])
+    slug = row.get("post_name") or ""
+    base = slug[:-3] if slug.endswith("-en") else slug
+    en_slug = slug if slug.endswith("-en") else f"{slug}-en"
+    old_en = f"{HOME}/{en_slug}/"
+    new_en = f"{HOME}/en/{en_slug}/"
+    st, data = content_edit(pid, old_en, new_en, True)
+    if st == 422:
+        st, data = content_edit(pid, old_en.rstrip("/"), new_en.rstrip("/"), True)
+    url_ok = st == 200
+    if st not in (200, 422):
+        print("url fail", pid, slug, st, str(data)[:140], flush=True)
+        return "fail"
+    st2, data2 = content_edit(
+        pid,
+        'hreflang="en" />',
+        f'hreflang="en" /><link rel="alternate" href="{HOME}/{base}/" hreflang="x-default" />',
+        False,
+    )
+    if st2 not in (200, 422):
+        print("xd fail", pid, slug, st2, str(data2)[:140], flush=True)
+        return "fail"
+    if url_ok or st2 == 200:
+        return "ok"
+    return "skip"
+
+
 def main():
     if not PASSWORD:
         raise SystemExit("Set WP_EG_APP_PASSWORD")
@@ -129,20 +191,14 @@ def main():
         sample[pid] = snapshot(pid)
     print("SEO titles before", json.dumps(sample, ensure_ascii=False), flush=True)
 
-    st, data = cli(
-        'wp db query "SELECT ID, post_name, post_type FROM ZeBDvesG5_posts '
+    www_rows = db_rows(
+        "SELECT ID, post_name, post_type FROM ZeBDvesG5_posts "
         "WHERE post_status='publish' AND post_type IN ('post','page') "
-        "AND post_content LIKE '%://rukn-eltatawer.com/eg%'\" --limit=2000"
+        "AND post_content LIKE '%://rukn-eltatawer.com/eg%'"
     )
-    out = (data or {}).get("stdout") if isinstance(data, dict) else ""
-    try:
-        rows = json.loads(out or "{}").get("results") or []
-    except Exception:
-        rows = []
-    print("non-www candidates", len(rows), flush=True)
-
+    print("non-www candidates", len(www_rows), flush=True)
     www_ok = www_skip = www_fail = 0
-    for i, row in enumerate(rows, 1):
+    for i, row in enumerate(www_rows, 1):
         pid = int(row["ID"])
         st, data = req(
             "/wpvibe/v1/content/edit",
@@ -164,25 +220,62 @@ def main():
             www_fail += 1
             print("www fail", pid, row.get("post_name"), st, str(data)[:120], flush=True)
         if i % 50 == 0:
-            print(f"  www {i}/{len(rows)} ok={www_ok} skip={www_skip} fail={www_fail}", flush=True)
+            print(f"  www {i}/{len(www_rows)} ok={www_ok} skip={www_skip} fail={www_fail}", flush=True)
         time.sleep(0.05)
     print(f"www ok={www_ok} skip={www_skip} fail={www_fail}", flush=True)
 
-    st, data = cli(
-        'wp db query "SELECT ID, post_name, post_type FROM ZeBDvesG5_posts '
-        "WHERE post_status='publish' AND post_type IN ('post','page') "
-        "AND post_content LIKE '%hreflang%'\" --limit=2000"
-    )
-    out = (data or {}).get("stdout") if isinstance(data, dict) else ""
-    try:
-        rows = json.loads(out or "{}").get("results") or []
-    except Exception:
-        rows = []
-    print("hreflang candidates", len(rows), flush=True)
+    rows = remaining_rows()
+    print("hreflang /en/ remaining", len(rows), flush=True)
 
     changed = fail = scanned = skipped = 0
+    failed_rows = []
     for row in rows:
         scanned += 1
+        result = rewrite_one(row)
+        if result == "ok":
+            changed += 1
+        elif result == "skip":
+            skipped += 1
+        else:
+            fail += 1
+            failed_rows.append(row)
+        if scanned % 10 == 0:
+            print(
+                f"  hreflang {scanned}/{len(rows)} changed={changed} skip={skipped} fail={fail}",
+                flush=True,
+            )
+        time.sleep(0.12)
+    if failed_rows:
+        print("retry fails", len(failed_rows), flush=True)
+        time.sleep(8)
+        still = []
+        for row in failed_rows:
+            result = rewrite_one(row)
+            if result == "ok":
+                changed += 1
+                fail -= 1
+            else:
+                still.append(row)
+            time.sleep(0.4)
+        failed_rows = still
+    print(
+        f"hreflang scanned={scanned} changed={changed} skip={skipped} fail={fail}",
+        flush=True,
+    )
+    leftover = remaining_rows()
+    print("still missing /en/ on -en urls", len(leftover), flush=True)
+    if leftover:
+        print("leftover sample", leftover[:8], flush=True)
+
+    related = db_rows(
+        "SELECT ID, post_name, post_type FROM ZeBDvesG5_posts "
+        "WHERE post_status='publish' AND post_type IN ('post','page') "
+        "AND post_content REGEXP 'rukn-eltatawer\\\\.com/eg/[a-z0-9-]+-en/'"
+    )
+    print("related EN links remaining", len(related), flush=True)
+    rel_ok = rel_skip = rel_fail = 0
+    failed_related = []
+    for i, row in enumerate(related, 1):
         pid = int(row["ID"])
         slug = row.get("post_name") or ""
         kind = row.get("post_type") or "post"
@@ -192,37 +285,54 @@ def main():
         if isinstance(item, dict) and isinstance(item.get("content"), dict):
             raw = item["content"].get("raw") or ""
         if not raw:
-            fail += 1
-            print("empty", pid, slug, st, flush=True)
-            time.sleep(0.3)
+            rel_fail += 1
+            failed_related.append(row)
+            print("related empty", pid, slug, st, flush=True)
             continue
         new = rewrite_html(raw, slug)
         if new == raw:
-            skipped += 1
+            rel_skip += 1
         else:
-            payload = {"content": new}
-            assert_no_title(payload, f"{kind} {pid}")
-            st, data = req(f"{route}/{pid}", "POST", payload)
-            if st in (200, 201):
-                changed += 1
+            st, data = content_edit(pid, raw, new, False)
+            if st == 200:
+                rel_ok += 1
             else:
-                fail += 1
-                print("fail", kind, pid, slug, st, str(data)[:120], flush=True)
-        if scanned % 25 == 0:
+                rel_fail += 1
+                failed_related.append(row)
+                print("related fail", pid, slug, st, str(data)[:140], flush=True)
+        if i % 10 == 0:
             print(
-                f"  hreflang {scanned}/{len(rows)} changed={changed} skip={skipped} fail={fail}",
+                f"  related {i}/{len(related)} ok={rel_ok} skip={rel_skip} fail={rel_fail}",
                 flush=True,
             )
-        time.sleep(0.08)
+        time.sleep(0.12)
+    if failed_related:
+        print("retry related", len(failed_related), flush=True)
+        time.sleep(8)
+        for row in failed_related:
+            pid = int(row["ID"])
+            slug = row.get("post_name") or ""
+            st, item = req(f"/wp/v2/posts/{pid}&context=edit&_fields=id,slug,content")
+            raw = ""
+            if isinstance(item, dict) and isinstance(item.get("content"), dict):
+                raw = item["content"].get("raw") or ""
+            if not raw:
+                continue
+            new = rewrite_html(raw, slug)
+            if new != raw:
+                content_edit(pid, raw, new, False)
+            time.sleep(0.4)
+    related_left = db_rows(
+        "SELECT ID, post_name FROM ZeBDvesG5_posts "
+        "WHERE post_status='publish' AND post_type IN ('post','page') "
+        "AND post_content REGEXP 'rukn-eltatawer\\\\.com/eg/[a-z0-9-]+-en/'"
+    )
     print(
-        f"hreflang scanned={scanned} changed={changed} skip={skipped} fail={fail}",
+        f"related ok={rel_ok} skip={rel_skip} fail={rel_fail} leftover={len(related_left)}",
         flush=True,
     )
 
-    cli(
-        'wp option patch insert rewrite_rules "robots\\.txt$" "index.php?robots=1"',
-        True,
-    )
+    cli("wp rewrite flush", True)
     cli("wp cache purge", True)
     cli("wp litespeed-purge all", True)
 
@@ -232,6 +342,8 @@ def main():
         a = after.get(pid) or {}
         if before.get("rank_math_title") != a.get("rank_math_title"):
             print("ERROR title changed", pid, flush=True)
+        if before.get("wp_title") != a.get("wp_title"):
+            print("ERROR wp title changed", pid, flush=True)
     print("DONE", flush=True)
 
 
